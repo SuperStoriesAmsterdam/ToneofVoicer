@@ -294,6 +294,9 @@ export default function VoiceTemplatePage() {
   const [refinementFeedback, setRefinementFeedback] = useState('');
   const [refining, setRefining] = useState(false);
 
+  // Follow-up conversation
+  const [followUpText, setFollowUpText] = useState('');
+
   // UI
   const [copied, setCopied] = useState('');
   const responseRef = useRef<HTMLDivElement>(null);
@@ -448,6 +451,67 @@ export default function VoiceTemplatePage() {
       });
     }
   }, [apiKey, currentStep, provider, stepStates, userInputs, writingSamples, finalTemplate, streamChat]);
+
+  // ── Follow-up within a step ───────────────────────────────────────────
+
+  const sendFollowUp = useCallback(async () => {
+    if (!apiKey || !followUpText.trim()) return;
+
+    const currentMessages = stepStates[currentStep]?.messages || [];
+    const system = getSystemForStep(currentStep, stepStates, finalTemplate);
+    // Build full context: conversation history from prior steps + this step's messages + new follow-up
+    const history = getConversationHistory(currentStep, stepStates);
+    const allMessages: Message[] = [...history, ...currentMessages, { role: 'user', content: followUpText.trim() }];
+
+    const newUserMsg: Message = { role: 'user', content: followUpText.trim() };
+    const updatedMessages = [...currentMessages, newUserMsg];
+
+    setStepStates(prev => {
+      const next = [...prev];
+      next[currentStep] = { messages: updatedMessages, streaming: true };
+      return next;
+    });
+    setFollowUpText('');
+
+    const injectAntiAi = currentStep === 5 || currentStep === 6;
+
+    try {
+      const fullResponse = await streamChat(allMessages, system, injectAntiAi, (text) => {
+        setStepStates(prev => {
+          const next = [...prev];
+          next[currentStep] = {
+            messages: [...updatedMessages, { role: 'assistant', content: text }],
+            streaming: true,
+          };
+          return next;
+        });
+        responseRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+      });
+
+      setStepStates(prev => {
+        const next = [...prev];
+        next[currentStep] = {
+          messages: [...updatedMessages, { role: 'assistant', content: fullResponse }],
+          streaming: false,
+        };
+        return next;
+      });
+
+      if (currentStep === 5 || currentStep === 7) {
+        setFinalTemplate(fullResponse);
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Something went wrong';
+      setStepStates(prev => {
+        const next = [...prev];
+        next[currentStep] = {
+          messages: [...updatedMessages, { role: 'assistant', content: `Error: ${message}` }],
+          streaming: false,
+        };
+        return next;
+      });
+    }
+  }, [apiKey, followUpText, currentStep, stepStates, finalTemplate, streamChat]);
 
   // ── Multi-type content generation ──────────────────────────────────────
 
@@ -890,23 +954,58 @@ export default function VoiceTemplatePage() {
               </div>
             )}
 
-            {/* AI response (non-content-type steps) */}
+            {/* AI response thread (non-content-type steps) */}
             {currentStep !== 6 && assistantResponse && (
               <div className="p-4" ref={responseRef}>
                 <div className="flex justify-between items-center mb-2">
                   <label className="text-xs font-bold uppercase">
-                    AI Response {state.streaming && <span className="animate-pulse">●</span>}
+                    Conversation {state.streaming && <span className="animate-pulse">●</span>}
                   </label>
                   <button
                     onClick={() => copyText(assistantResponse, 'response')}
                     className="text-xs border border-black px-2 py-0.5 hover:bg-black hover:text-white transition-colors"
                   >
-                    {copied === 'response' ? 'Copied!' : 'Copy'}
+                    {copied === 'response' ? 'Copied!' : 'Copy Last'}
                   </button>
                 </div>
-                <div className="border-2 border-black p-4 bg-gray-50 max-h-96 overflow-y-auto">
-                  <Md>{assistantResponse}</Md>
+                <div className="border-2 border-black bg-gray-50 max-h-[28rem] overflow-y-auto">
+                  {state.messages.map((msg, i) => (
+                    <div key={i} className={`p-3 ${i > 0 ? 'border-t border-gray-300' : ''} ${msg.role === 'user' ? 'bg-blue-50' : 'bg-gray-50'}`}>
+                      <div className="text-[10px] font-bold uppercase mb-1 opacity-50">
+                        {msg.role === 'user' ? 'You' : 'AI'}
+                      </div>
+                      <div className="text-sm">
+                        <Md>{msg.content}</Md>
+                      </div>
+                    </div>
+                  ))}
                 </div>
+
+                {/* Follow-up input */}
+                {!state.streaming && (
+                  <div className="mt-3 flex gap-2">
+                    <textarea
+                      value={followUpText}
+                      onChange={e => setFollowUpText(e.target.value)}
+                      placeholder="Continue the conversation... ask a follow-up or give more feedback"
+                      rows={2}
+                      className="flex-1 border-2 border-black p-2 font-mono text-sm resize-y"
+                      onKeyDown={e => {
+                        if (e.key === 'Enter' && !e.shiftKey) {
+                          e.preventDefault();
+                          sendFollowUp();
+                        }
+                      }}
+                    />
+                    <button
+                      onClick={sendFollowUp}
+                      disabled={!followUpText.trim()}
+                      className="border-2 border-black px-4 py-2 font-bold text-sm self-end disabled:opacity-30 hover:bg-black hover:text-white transition-colors"
+                    >
+                      Send
+                    </button>
+                  </div>
+                )}
               </div>
             )}
           </div>
