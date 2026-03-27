@@ -648,6 +648,46 @@ export default function VoiceTemplatePage() {
     setSavedTemplates(prev => prev.filter(t => t.id !== id));
   };
 
+  // ── Import template ────────────────────────────────────────────────────
+
+  const importFileRef = useRef<HTMLInputElement>(null);
+  const [showImportPaste, setShowImportPaste] = useState(false);
+  const [importPasteText, setImportPasteText] = useState('');
+
+  const applyImportedTemplate = (content: string, name: string) => {
+    setFinalTemplate(content);
+    setActiveTemplateName(name);
+    setStepStates(prev => {
+      const next = [...prev];
+      next[5] = {
+        messages: [
+          { role: 'user', content: '(imported template)' },
+          { role: 'assistant', content: content },
+        ],
+        streaming: false,
+      };
+      return next;
+    });
+    // Jump to test step and auto-open refinement
+    setCurrentStep(6);
+    setRefinementMode(false);
+    setShowImportPaste(false);
+    setImportPasteText('');
+  };
+
+  const handleFileImport = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const content = ev.target?.result as string;
+      const name = file.name.replace(/\.(md|txt)$/, '');
+      applyImportedTemplate(content, name);
+    };
+    reader.readAsText(file);
+    e.target.value = ''; // reset so same file can be re-imported
+  };
+
   // ── Reset ──────────────────────────────────────────────────────────────
 
   const resetAll = () => {
@@ -710,6 +750,19 @@ export default function VoiceTemplatePage() {
           </div>
           <div className="flex gap-2">
             <button
+              onClick={() => setShowImportPaste(!showImportPaste)}
+              className="border-2 border-purple-600 text-purple-600 px-4 py-2 text-sm font-bold hover:bg-purple-600 hover:text-white transition-colors"
+            >
+              Import Template
+            </button>
+            <input
+              ref={importFileRef}
+              type="file"
+              accept=".md,.txt"
+              onChange={handleFileImport}
+              className="hidden"
+            />
+            <button
               onClick={() => setShowLibrary(!showLibrary)}
               className="border-2 border-black px-4 py-2 text-sm font-bold hover:bg-black hover:text-white transition-colors"
             >
@@ -749,6 +802,48 @@ export default function VoiceTemplatePage() {
                 ))}
               </div>
             )}
+          </div>
+        )}
+
+        {/* Import Template Panel */}
+        {showImportPaste && (
+          <div className="border-4 border-purple-600 bg-white shadow-brutal-lg mb-8 p-4">
+            <h2 className="font-black text-lg mb-2">Import Voice Template</h2>
+            <p className="text-sm mb-4 opacity-70">Upload a .md file or paste your template below. You&apos;ll jump straight to testing &amp; refinement.</p>
+            <div className="flex gap-4 mb-4">
+              <button
+                onClick={() => importFileRef.current?.click()}
+                className="border-2 border-black px-6 py-3 font-bold hover:bg-black hover:text-white transition-colors"
+              >
+                Upload .md file
+              </button>
+              <span className="self-center text-sm font-bold opacity-50">or paste below:</span>
+            </div>
+            <textarea
+              value={importPasteText}
+              onChange={e => setImportPasteText(e.target.value)}
+              placeholder="Paste your voice template markdown here..."
+              rows={8}
+              className="w-full border-2 border-black p-3 font-mono text-sm resize-y mb-3"
+            />
+            <div className="flex gap-2">
+              <button
+                onClick={() => {
+                  if (!importPasteText.trim()) return;
+                  applyImportedTemplate(importPasteText.trim(), 'Imported Template');
+                }}
+                disabled={!importPasteText.trim()}
+                className="border-2 border-black px-6 py-2 font-bold bg-purple-300 hover:bg-purple-400 disabled:opacity-30 transition-colors"
+              >
+                Import &amp; Start Testing
+              </button>
+              <button
+                onClick={() => { setShowImportPaste(false); setImportPasteText(''); }}
+                className="border-2 border-black px-4 py-2 font-bold text-sm hover:bg-black hover:text-white transition-colors"
+              >
+                Cancel
+              </button>
+            </div>
           </div>
         )}
 
