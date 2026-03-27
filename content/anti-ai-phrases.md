@@ -58,6 +58,23 @@
 - "at the end of the day"
 - "needless to say"
 
+## Fake-thoughtful transitions
+- "But here's the part that puzzles me"
+- "But here's what really interests me"
+- "But here's the thing"
+- "Here's what I find fascinating"
+- "What I find particularly interesting"
+- "Let me be honest"
+- "I'll be transparent"
+- "Can I be real for a second"
+- "The real question is"
+- "What nobody talks about is"
+- "Here's what most people miss"
+- "The truth is"
+- "I've been thinking a lot about"
+- "And that's the real takeaway"
+- "But here's the kicker"
+
 ## Overly formal connectors
 - "Furthermore"
 - "Moreover"

@@ -290,7 +290,10 @@ export default function VoiceTemplatePage() {
 
   // Refinement loop
   const [refinementMode, setRefinementMode] = useState(false);
-  const [refinementPosts, setRefinementPosts] = useState<string[]>([]);
+  const [refinementTopic, setRefinementTopic] = useState('');
+  const [refinementTypes, setRefinementTypes] = useState<string[]>(['linkedin']);
+  const [refinementResults, setRefinementResults] = useState<Record<string, string>>({});
+  const [activeRefinementTab, setActiveRefinementTab] = useState('linkedin');
   const [refinementFeedback, setRefinementFeedback] = useState('');
   const [refining, setRefining] = useState(false);
 
@@ -564,49 +567,59 @@ export default function VoiceTemplatePage() {
 
   // ── Refinement loop ────────────────────────────────────────────────────
 
-  const generateRefinementPosts = useCallback(async () => {
-    if (!finalTemplate) return;
+  const generateRefinementContent = useCallback(async () => {
+    if (!finalTemplate || !refinementTopic.trim()) return alert('Please enter a topic first.');
+    if (refinementTypes.length === 0) return alert('Please select at least one content type.');
     setRefining(true);
-    setRefinementPosts([]);
-    const topics = ['the future of remote work', 'lessons from a recent project', 'a counterintuitive business insight'];
-    const posts: string[] = [];
+    setRefinementResults({});
+    const results: Record<string, string> = {};
 
-    for (const topic of topics) {
+    const typesToGenerate = CONTENT_TYPES.filter(t => refinementTypes.includes(t.id));
+    setActiveRefinementTab(typesToGenerate[0]?.id || 'linkedin');
+
+    for (const type of typesToGenerate) {
+      setActiveRefinementTab(type.id);
       try {
         const result = await streamChat(
-          [{ role: 'user', content: `Write a LinkedIn post about ${topic}` }],
+          [{ role: 'user', content: `${type.prompt} ${refinementTopic.trim()}` }],
           finalTemplate, true,
+          (text) => setRefinementResults(prev => ({ ...prev, [type.id]: text })),
         );
-        posts.push(result);
-        setRefinementPosts([...posts]);
+        results[type.id] = result;
+        setRefinementResults(prev => ({ ...prev, [type.id]: result }));
       } catch {
-        posts.push('(generation failed)');
-        setRefinementPosts([...posts]);
+        results[type.id] = '(generation failed)';
+        setRefinementResults(prev => ({ ...prev, [type.id]: '(generation failed)' }));
       }
     }
     setRefining(false);
-  }, [finalTemplate, streamChat]);
+  }, [finalTemplate, refinementTopic, refinementTypes, streamChat]);
 
   const refineTemplate = useCallback(async () => {
     if (!refinementFeedback.trim() || !finalTemplate) return;
     setRefining(true);
     try {
-      const postsContext = refinementPosts.map((p, i) => `Post ${i + 1}:\n${p}`).join('\n\n');
+      const contentContext = Object.entries(refinementResults)
+        .map(([id, text]) => {
+          const label = CONTENT_TYPES.find(t => t.id === id)?.label || id;
+          return `## ${label}\n${text}`;
+        })
+        .join('\n\n---\n\n');
       const result = await streamChat(
         [{
           role: 'user',
-          content: `Here are 3 posts generated with the current voice template:\n\n${postsContext}\n\nFeedback: ${refinementFeedback}\n\nPlease refine the voice template to address this feedback. Output the complete updated template.`,
+          content: `Here is content generated with the current voice template:\n\n${contentContext}\n\nFeedback: ${refinementFeedback}\n\nPlease refine the voice template to address this feedback. Output the complete updated template.`,
         }],
         undefined, true,
       );
       setFinalTemplate(result);
       setRefinementFeedback('');
-      setRefinementPosts([]);
+      setRefinementResults({});
     } catch (err) {
       alert(err instanceof Error ? err.message : 'Refinement failed');
     }
     setRefining(false);
-  }, [refinementFeedback, finalTemplate, refinementPosts, streamChat]);
+  }, [refinementFeedback, finalTemplate, refinementResults, streamChat]);
 
   // ── Template library ───────────────────────────────────────────────────
 
@@ -701,7 +714,8 @@ export default function VoiceTemplatePage() {
     setActiveTemplateName('');
     setContentResults({});
     setRefinementMode(false);
-    setRefinementPosts([]);
+    setRefinementResults({});
+    setRefinementTopic('');
   };
 
   // ── Copy helper ────────────────────────────────────────────────────────
@@ -1172,12 +1186,12 @@ export default function VoiceTemplatePage() {
         {finalTemplate && !refinementMode && (
           <div className="text-center mb-8">
             <button
-              onClick={() => { setRefinementMode(true); setRefinementPosts([]); }}
+              onClick={() => { setRefinementMode(true); setRefinementResults({}); }}
               className="border-4 border-black px-8 py-4 font-black uppercase bg-purple-300 hover:bg-purple-400 shadow-brutal-sm hover:shadow-brutal transition-all"
             >
               Start Refinement Loop
             </button>
-            <p className="text-xs mt-2 opacity-60">Generate test posts, review, and iteratively refine your template</p>
+            <p className="text-xs mt-2 opacity-60">Pick a topic &amp; medium, generate content, review, and iteratively refine your template</p>
           </div>
         )}
 
@@ -1190,47 +1204,95 @@ export default function VoiceTemplatePage() {
               </button>
             </div>
 
-            <div className="flex flex-col md:flex-row gap-4 p-4">
-              {/* Left: generated posts */}
-              <div className="md:w-[60%]">
-                <button
-                  onClick={generateRefinementPosts}
-                  disabled={refining}
-                  className={`w-full border-4 border-black p-3 font-black uppercase mb-4 transition-all ${
-                    refining ? 'bg-gray-300 animate-pulse' : 'bg-green-400 hover:bg-green-500 shadow-brutal-sm'
-                  }`}
-                >
-                  {refining ? 'Generating...' : refinementPosts.length > 0 ? 'Regenerate 3 Posts' : 'Generate 3 Test Posts'}
-                </button>
-                {refinementPosts.map((post, i) => (
-                  <div key={i} className="border-2 border-black p-3 mb-3 bg-white max-h-60 overflow-y-auto">
-                    <div className="text-xs font-bold uppercase mb-2 opacity-60">Post {i + 1}</div>
-                    <Md>{post}</Md>
+            {/* Brief: topic + medium + generate */}
+            <div className="p-4 border-b-4 border-black bg-purple-100">
+              <div className="flex flex-col md:flex-row gap-4">
+                <div className="flex-1">
+                  <label className="block text-xs font-bold uppercase mb-1">Topic</label>
+                  <input
+                    value={refinementTopic}
+                    onChange={e => setRefinementTopic(e.target.value)}
+                    placeholder="e.g. AI in recruitment, lessons from scaling a startup..."
+                    className="w-full border-2 border-black p-2 font-mono text-sm"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold uppercase mb-1">Content Types</label>
+                  <div className="flex flex-wrap gap-2">
+                    {CONTENT_TYPES.map(type => (
+                      <label key={type.id} className="flex items-center gap-1 text-sm cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={refinementTypes.includes(type.id)}
+                          onChange={e => {
+                            setRefinementTypes(prev =>
+                              e.target.checked ? [...prev, type.id] : prev.filter(t => t !== type.id)
+                            );
+                          }}
+                          className="w-4 h-4"
+                        />
+                        {type.label}
+                      </label>
+                    ))}
                   </div>
-                ))}
+                </div>
               </div>
-
-              {/* Right: feedback */}
-              <div className="md:w-[40%]">
-                <label className="block text-xs font-bold uppercase mb-2">Your Feedback</label>
-                <textarea
-                  value={refinementFeedback}
-                  onChange={e => setRefinementFeedback(e.target.value)}
-                  placeholder="What needs to change? Be specific..."
-                  rows={6}
-                  className="w-full border-2 border-black p-3 font-mono text-sm resize-y mb-3"
-                />
-                <button
-                  onClick={refineTemplate}
-                  disabled={refining || !refinementFeedback.trim()}
-                  className={`w-full border-4 border-black p-3 font-black uppercase transition-all ${
-                    refining ? 'bg-gray-300 animate-pulse' : 'bg-yellow-300 hover:bg-yellow-400 shadow-brutal-sm disabled:opacity-30'
-                  }`}
-                >
-                  {refining ? 'Refining...' : 'Refine Template'}
-                </button>
-              </div>
+              <button
+                onClick={generateRefinementContent}
+                disabled={refining || !refinementTopic.trim() || refinementTypes.length === 0}
+                className={`w-full mt-3 border-4 border-black p-3 font-black uppercase transition-all ${
+                  refining ? 'bg-gray-300 animate-pulse' : 'bg-green-400 hover:bg-green-500 shadow-brutal-sm disabled:opacity-30'
+                }`}
+              >
+                {refining ? 'Generating...' : Object.keys(refinementResults).length > 0 ? 'Regenerate Content' : 'Generate Content'}
+              </button>
             </div>
+
+            {/* Results + feedback split pane */}
+            {Object.keys(refinementResults).length > 0 && (
+              <div className="flex flex-col md:flex-row gap-4 p-4">
+                {/* Left: tabbed results */}
+                <div className="md:w-[60%]">
+                  <div className="flex border-b-2 border-black mb-3">
+                    {CONTENT_TYPES.filter(t => refinementTypes.includes(t.id)).map(type => (
+                      <button
+                        key={type.id}
+                        onClick={() => setActiveRefinementTab(type.id)}
+                        className={`px-4 py-2 text-xs font-bold uppercase border-2 border-black border-b-0 -mb-[2px] transition-colors ${
+                          activeRefinementTab === type.id ? 'bg-black text-white' : 'bg-white hover:bg-gray-100'
+                        }`}
+                      >
+                        {type.label}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="border-2 border-black p-4 bg-white max-h-[28rem] overflow-y-auto">
+                    <Md>{refinementResults[activeRefinementTab] || '(generating...)'}</Md>
+                  </div>
+                </div>
+
+                {/* Right: feedback */}
+                <div className="md:w-[40%]">
+                  <label className="block text-xs font-bold uppercase mb-2">Your Feedback</label>
+                  <textarea
+                    value={refinementFeedback}
+                    onChange={e => setRefinementFeedback(e.target.value)}
+                    placeholder="What needs to change? Be specific about tone, structure, word choices..."
+                    rows={6}
+                    className="w-full border-2 border-black p-3 font-mono text-sm resize-y mb-3"
+                  />
+                  <button
+                    onClick={refineTemplate}
+                    disabled={refining || !refinementFeedback.trim()}
+                    className={`w-full border-4 border-black p-3 font-black uppercase transition-all ${
+                      refining ? 'bg-gray-300 animate-pulse' : 'bg-yellow-300 hover:bg-yellow-400 shadow-brutal-sm disabled:opacity-30'
+                    }`}
+                  >
+                    {refining ? 'Refining...' : 'Refine Template'}
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         )}
       </div>
