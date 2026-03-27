@@ -1,21 +1,41 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
 import Anthropic from '@anthropic-ai/sdk';
 import OpenAI from 'openai';
+import fs from 'fs';
+import path from 'path';
+
+// Load anti-AI phrases at module level (cached across requests)
+let antiAiPhrases = '';
+try {
+  antiAiPhrases = fs.readFileSync(
+    path.join(process.cwd(), 'content', 'anti-ai-phrases.md'),
+    'utf-8',
+  );
+} catch {
+  // File might not exist in dev
+}
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
-  const { provider, apiKey, messages, system } = req.body as {
+  const { provider, apiKey, messages, system, injectAntiAi } = req.body as {
     provider: 'claude' | 'openai';
     apiKey: string;
     messages: { role: 'user' | 'assistant'; content: string }[];
     system?: string;
+    injectAntiAi?: boolean;
   };
 
   if (!apiKey || !messages?.length) {
     return res.status(400).json({ error: 'Missing apiKey or messages' });
+  }
+
+  let finalSystem = system || '';
+  if (injectAntiAi && antiAiPhrases) {
+    const antiAiBlock = `\n\nAVOID THESE AI-TELL PHRASES — they make content instantly recognizable as AI-generated:\n${antiAiPhrases}\nUse natural alternatives instead. If you catch yourself about to use one, rephrase completely.\n`;
+    finalSystem = finalSystem ? finalSystem + antiAiBlock : antiAiBlock;
   }
 
   res.setHeader('Content-Type', 'text/event-stream');
@@ -28,7 +48,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       const stream = client.messages.stream({
         model: 'claude-sonnet-4-20250514',
         max_tokens: 4096,
-        system: system || undefined,
+        system: finalSystem || undefined,
         messages,
       });
 
@@ -39,8 +59,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       }
     } else {
       const client = new OpenAI({ apiKey });
-      const openaiMessages = system
-        ? [{ role: 'system' as const, content: system }, ...messages]
+      const openaiMessages = finalSystem
+        ? [{ role: 'system' as const, content: finalSystem }, ...messages]
         : messages;
 
       const stream = await client.chat.completions.create({
