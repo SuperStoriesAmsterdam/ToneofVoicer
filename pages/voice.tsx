@@ -288,7 +288,7 @@ export default function VoiceTemplatePage() {
   const [saveNameInput, setSaveNameInput] = useState('');
   const [showSaveInput, setShowSaveInput] = useState(false);
 
-  // Refinement loop
+  // Refinement loop — NEW: iterates on the ARTICLE, not the template
   const [refinementMode, setRefinementMode] = useState(false);
   const [refinementTopic, setRefinementTopic] = useState('');
   const [refinementMedium, setRefinementMedium] = useState('linkedin');
@@ -304,9 +304,18 @@ export default function VoiceTemplatePage() {
   const [refinementFeedback, setRefinementFeedback] = useState('');
   const [refining, setRefining] = useState(false);
   const [refinementRound, setRefinementRound] = useState(0);
+  // Article iteration conversation history
+  const [articleConversation, setArticleConversation] = useState<Message[]>([]);
+  // Track if user has been offered template update
+  const [showTemplateUpdateOffer, setShowTemplateUpdateOffer] = useState(false);
 
   // Follow-up conversation
   const [followUpText, setFollowUpText] = useState('');
+
+  // Custom anti-AI phrases
+  const [customAntiAiPhrases, setCustomAntiAiPhrases] = useState('');
+  const [showAntiAiEditor, setShowAntiAiEditor] = useState(false);
+  const antiAiFileRef = useRef<HTMLInputElement>(null);
 
   // UI
   const [copied, setCopied] = useState('');
@@ -335,6 +344,9 @@ export default function VoiceTemplatePage() {
 
       const lib = localStorage.getItem(LIBRARY_KEY);
       if (lib) setSavedTemplates(JSON.parse(lib));
+
+      const antiAi = localStorage.getItem('tov-custom-anti-ai');
+      if (antiAi) setCustomAntiAiPhrases(antiAi);
     } catch { /* ignore corrupt data */ }
     setIsHydrated(true);
   }, []);
@@ -356,6 +368,13 @@ export default function VoiceTemplatePage() {
     if (!isHydrated) return;
     localStorage.setItem(LIBRARY_KEY, JSON.stringify(savedTemplates));
   }, [savedTemplates, isHydrated]);
+
+  useEffect(() => {
+    if (!isHydrated) return;
+    if (customAntiAiPhrases) {
+      localStorage.setItem('tov-custom-anti-ai', customAntiAiPhrases);
+    }
+  }, [customAntiAiPhrases, isHydrated]);
 
   // ── Settings persistence ───────────────────────────────────────────────
 
@@ -470,7 +489,6 @@ export default function VoiceTemplatePage() {
 
     const currentMessages = stepStates[currentStep]?.messages || [];
     const system = getSystemForStep(currentStep, stepStates, finalTemplate);
-    // Build full context: conversation history from prior steps + this step's messages + new follow-up
     const history = getConversationHistory(currentStep, stepStates);
     const allMessages: Message[] = [...history, ...currentMessages, { role: 'user', content: followUpText.trim() }];
 
@@ -555,7 +573,6 @@ export default function VoiceTemplatePage() {
     }
 
     setGeneratingTypes(false);
-    // Also set step 6 state so navigation works
     setStepStates(prev => {
       const next = [...prev];
       const combined = Object.entries(results).map(([id, text]) => {
@@ -573,14 +590,15 @@ export default function VoiceTemplatePage() {
     });
   }, [apiKey, userInputs, finalTemplate, stepStates, selectedTypes, streamChat]);
 
-  // ── Refinement loop ────────────────────────────────────────────────────
+  // ── Refinement loop — iterates on the ARTICLE ─────────────────────────
 
   const generateRefinementContent = useCallback(async () => {
     if (!finalTemplate || !refinementTopic.trim()) return alert('Please enter a topic first.');
     setRefining(true);
+    setArticleConversation([]);
+    setShowTemplateUpdateOffer(false);
 
     if (refinementLoopMode === 'variations') {
-      // Generate 3 variations of the same piece
       setVariationResults([]);
       setActiveVariation(0);
       const medium = CONTENT_TYPES.find(t => t.id === refinementMedium);
@@ -590,7 +608,7 @@ export default function VoiceTemplatePage() {
       for (let i = 0; i < 3; i++) {
         const variationPrompt = i === 0
           ? `${promptBase} ${refinementTopic.trim()}`
-          : `${promptBase} ${refinementTopic.trim()}\n\nIMPORTANT: This is variation ${i + 1} of 3. Write a COMPLETELY DIFFERENT version — different opening, different angle, different structure. Do NOT repeat the approach from previous versions. Explore a fresh perspective on this topic.`;
+          : `${promptBase} ${refinementTopic.trim()}\n\nIMPORTANT: This is variation ${i + 1} of 3. Write a COMPLETELY DIFFERENT version — different opening, different angle, different structure. Do NOT repeat the approach from previous versions.`;
 
         try {
           const idx = i;
@@ -611,7 +629,6 @@ export default function VoiceTemplatePage() {
         }
       }
     } else {
-      // Multi-medium mode: 1 version per selected medium
       if (refinementTypes.length === 0) { setRefining(false); return alert('Select at least one content type.'); }
       setRefinementResults({});
       const results: Record<string, string> = {};
@@ -639,39 +656,94 @@ export default function VoiceTemplatePage() {
     setRefining(false);
   }, [finalTemplate, refinementTopic, refinementLoopMode, refinementMedium, refinementTypes, streamChat]);
 
-  const refineTemplate = useCallback(async () => {
+  // Refine the ARTICLE based on feedback (not the template!)
+  const refineArticle = useCallback(async () => {
     if (!refinementFeedback.trim() || !finalTemplate) return;
     setRefining(true);
-    try {
-      let contentContext: string;
-      if (refinementLoopMode === 'variations') {
-        const medium = CONTENT_TYPES.find(t => t.id === refinementMedium)?.label || refinementMedium;
-        contentContext = variationResults
-          .map((text, i) => `## Variation ${i + 1} (${medium})\n${text}`)
-          .join('\n\n---\n\n');
-      } else {
-        contentContext = Object.entries(refinementResults)
-          .map(([id, text]) => {
-            const label = CONTENT_TYPES.find(t => t.id === id)?.label || id;
-            return `## ${label}\n${text}`;
-          })
-          .join('\n\n---\n\n');
-      }
 
-      const result = await streamChat(
-        [{
-          role: 'user',
-          content: `Here is content generated with the current voice template:\n\n${contentContext}\n\nFeedback from the author: ${refinementFeedback}\n\nPlease refine the voice template to address this feedback. Remember: express style rules as tendencies with frequency weights, not absolute rules. Maintain controlled inconsistency for natural voice. Output the complete updated template.\n\nHere is the current template for reference:\n${finalTemplate}`,
-        }],
-        undefined, true,
+    // Get the current article content
+    let currentArticle: string;
+    if (refinementLoopMode === 'variations') {
+      currentArticle = variationResults[activeVariation] || '';
+    } else {
+      currentArticle = refinementResults[activeRefinementTab] || '';
+    }
+
+    // Build conversation: the article + feedback → rewritten article
+    const newMessages: Message[] = [
+      ...articleConversation,
+      { role: 'user', content: articleConversation.length === 0
+        ? `Here is the current article:\n\n${currentArticle}\n\nPlease rewrite this article based on this feedback: ${refinementFeedback}\n\nKeep the same topic and general structure but adjust based on the feedback. Output only the rewritten article, nothing else.`
+        : `Further feedback on the rewrite: ${refinementFeedback}\n\nPlease rewrite again based on this additional feedback. Output only the rewritten article, nothing else.`
+      },
+    ];
+
+    try {
+      let result = '';
+      await streamChat(
+        newMessages,
+        finalTemplate,
+        true,
+        (text) => {
+          result = text;
+          // Update the active variation/result in real-time
+          if (refinementLoopMode === 'variations') {
+            setVariationResults(prev => {
+              const next = [...prev];
+              next[activeVariation] = text;
+              return next;
+            });
+          } else {
+            setRefinementResults(prev => ({ ...prev, [activeRefinementTab]: text }));
+          }
+        },
       );
-      setFinalTemplate(result);
+
+      // Save conversation for further iterations
+      setArticleConversation([
+        ...newMessages,
+        { role: 'assistant', content: result },
+      ]);
+
       setRefinementFeedback('');
+      setRefinementRound(prev => prev + 1);
+
+      // After 2+ rounds of article refinement, offer template update
+      if (refinementRound >= 1) {
+        setShowTemplateUpdateOffer(true);
+      }
     } catch (err) {
       alert(err instanceof Error ? err.message : 'Refinement failed');
     }
     setRefining(false);
-  }, [refinementFeedback, finalTemplate, refinementLoopMode, refinementMedium, variationResults, refinementResults, streamChat]);
+  }, [refinementFeedback, finalTemplate, refinementLoopMode, variationResults, activeVariation, refinementResults, activeRefinementTab, articleConversation, refinementRound, streamChat]);
+
+  // Update template based on accumulated feedback (only when user chooses to)
+  const updateTemplateFromSession = useCallback(async () => {
+    if (!finalTemplate || articleConversation.length === 0) return;
+    setRefining(true);
+
+    // Collect all user feedback from the article conversation
+    const allFeedback = articleConversation
+      .filter(m => m.role === 'user')
+      .map(m => m.content)
+      .join('\n\n');
+
+    try {
+      const result = await streamChat(
+        [{
+          role: 'user',
+          content: `Based on these article refinement sessions, the author gave the following feedback about content generated with their voice template:\n\n${allFeedback}\n\nPlease update the voice template to incorporate these insights. Remember: express style rules as tendencies with frequency weights, not absolute rules. Maintain controlled inconsistency for natural voice.\n\nCurrent template:\n${finalTemplate}\n\nOutput the complete updated template.`,
+        }],
+        undefined, true,
+      );
+      setFinalTemplate(result);
+      setShowTemplateUpdateOffer(false);
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Template update failed');
+    }
+    setRefining(false);
+  }, [finalTemplate, articleConversation, streamChat]);
 
   // ── Template library ───────────────────────────────────────────────────
 
@@ -733,7 +805,6 @@ export default function VoiceTemplatePage() {
       };
       return next;
     });
-    // Jump to test step and auto-open refinement
     setCurrentStep(6);
     setRefinementMode(false);
     setShowImportPaste(false);
@@ -750,7 +821,20 @@ export default function VoiceTemplatePage() {
       applyImportedTemplate(content, name);
     };
     reader.readAsText(file);
-    e.target.value = ''; // reset so same file can be re-imported
+    e.target.value = '';
+  };
+
+  // ── Anti-AI phrase file import ────────────────────────────────────────
+
+  const handleAntiAiFileImport = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      setCustomAntiAiPhrases(ev.target?.result as string);
+    };
+    reader.readAsText(file);
+    e.target.value = '';
   };
 
   // ── Reset ──────────────────────────────────────────────────────────────
@@ -770,6 +854,8 @@ export default function VoiceTemplatePage() {
     setVariationResults([]);
     setRefinementTopic('');
     setRefinementRound(0);
+    setArticleConversation([]);
+    setShowTemplateUpdateOffer(false);
   };
 
   // ── Copy helper ────────────────────────────────────────────────────────
@@ -791,6 +877,9 @@ export default function VoiceTemplatePage() {
   const feedbackSourceResponse = isFeedbackStep
     ? stepStates[FEEDBACK_SOURCE[currentStep]]?.messages?.find(m => m.role === 'assistant')?.content || ''
     : '';
+
+  // Template should only be visible after Phase 3 (step 5 completed)
+  const templateReady = finalTemplate && currentStep >= 5;
 
   // ── Loading state ──────────────────────────────────────────────────────
 
@@ -816,7 +905,7 @@ export default function VoiceTemplatePage() {
               {activeTemplateName && <span className="ml-2 bg-black text-white px-2 py-0.5 text-xs">{activeTemplateName}</span>}
             </p>
           </div>
-          <div className="flex gap-2">
+          <div className="flex gap-2 flex-wrap">
             <button
               onClick={() => setShowImportPaste(!showImportPaste)}
               className="border-2 border-purple-600 text-purple-600 px-4 py-2 text-sm font-bold hover:bg-purple-600 hover:text-white transition-colors"
@@ -835,6 +924,12 @@ export default function VoiceTemplatePage() {
               className="border-2 border-black px-4 py-2 text-sm font-bold hover:bg-black hover:text-white transition-colors"
             >
               Library ({savedTemplates.length})
+            </button>
+            <button
+              onClick={() => setShowAntiAiEditor(!showAntiAiEditor)}
+              className="border-2 border-orange-600 text-orange-600 px-4 py-2 text-sm font-bold hover:bg-orange-600 hover:text-white transition-colors"
+            >
+              Anti-AI Phrases
             </button>
             <button
               onClick={resetAll}
@@ -912,6 +1007,49 @@ export default function VoiceTemplatePage() {
                 Cancel
               </button>
             </div>
+          </div>
+        )}
+
+        {/* Anti-AI Phrases Editor */}
+        {showAntiAiEditor && (
+          <div className="border-4 border-orange-600 bg-white shadow-brutal-lg mb-8 p-4">
+            <h2 className="font-black text-lg mb-2">Anti-AI Phrases</h2>
+            <p className="text-sm mb-4 opacity-70">
+              Customize phrases that the AI should avoid. These get injected into template generation and content creation.
+              Upload a .md file or edit directly below.
+            </p>
+            <div className="flex gap-4 mb-4">
+              <button
+                onClick={() => antiAiFileRef.current?.click()}
+                className="border-2 border-black px-4 py-2 font-bold text-sm hover:bg-black hover:text-white transition-colors"
+              >
+                Upload .md file
+              </button>
+              <input
+                ref={antiAiFileRef}
+                type="file"
+                accept=".md,.txt"
+                onChange={handleAntiAiFileImport}
+                className="hidden"
+              />
+              <button
+                onClick={() => setCustomAntiAiPhrases('')}
+                className="border-2 border-red-600 text-red-600 px-4 py-2 font-bold text-sm hover:bg-red-600 hover:text-white transition-colors"
+              >
+                Clear
+              </button>
+            </div>
+            <textarea
+              value={customAntiAiPhrases}
+              onChange={e => setCustomAntiAiPhrases(e.target.value)}
+              placeholder={"# Anti-AI Phrases\n\n## Filler openers\n- \"In today's fast-paced world\"\n- \"It's no secret that\"\n\n## Overused verbs\n- \"delve into\"\n- \"leverage\""}
+              rows={10}
+              className="w-full border-2 border-black p-3 font-mono text-sm resize-y mb-3"
+            />
+            <p className="text-xs opacity-50">
+              {customAntiAiPhrases ? `${customAntiAiPhrases.split('\n').filter(l => l.startsWith('-')).length} phrases loaded` : 'Using built-in default list (loaded from server)'}
+              {' · '}Saved automatically in your browser
+            </p>
           </div>
         )}
 
@@ -1193,8 +1331,8 @@ export default function VoiceTemplatePage() {
           </button>
         </div>
 
-        {/* Final template — only show after Phase 3 (step 5+) */}
-        {finalTemplate && currentStep >= 5 && (
+        {/* Final template — ONLY show after Phase 3 */}
+        {templateReady && (
           <div className="border-4 border-black bg-green-100 shadow-brutal-lg mb-8">
             <div className="border-b-4 border-black p-4 bg-green-300">
               <div className="flex justify-between items-center flex-wrap gap-2">
@@ -1236,16 +1374,16 @@ export default function VoiceTemplatePage() {
           </div>
         )}
 
-        {/* Refinement Loop */}
-        {finalTemplate && currentStep >= 5 && !refinementMode && (
+        {/* Refinement Loop — enter button */}
+        {templateReady && !refinementMode && (
           <div className="text-center mb-8">
             <button
-              onClick={() => { setRefinementMode(true); setVariationResults([]); setRefinementResults({}); setRefinementRound(0); }}
+              onClick={() => { setRefinementMode(true); setVariationResults([]); setRefinementResults({}); setRefinementRound(0); setArticleConversation([]); setShowTemplateUpdateOffer(false); }}
               className="border-4 border-black px-8 py-4 font-black uppercase bg-purple-300 hover:bg-purple-400 shadow-brutal-sm hover:shadow-brutal transition-all"
             >
               Start Refinement Loop
             </button>
-            <p className="text-xs mt-2 opacity-60">Pick a topic &amp; medium, generate variations, compare, and iteratively refine your template</p>
+            <p className="text-xs mt-2 opacity-60">Pick a topic &amp; medium, generate variations, iterate on the article, then optionally update your template</p>
           </div>
         )}
 
@@ -1341,7 +1479,7 @@ export default function VoiceTemplatePage() {
                   refining ? 'bg-gray-300 animate-pulse' : 'bg-green-400 hover:bg-green-500 shadow-brutal-sm disabled:opacity-30'
                 }`}
               >
-                {refining ? 'Generating...' : refinementRound > 0 ? 'Regenerate with Updated Template' : 'Generate Content'}
+                {refining ? 'Generating...' : refinementRound > 0 ? 'Regenerate (fresh from template)' : 'Generate Content'}
               </button>
             </div>
 
@@ -1366,28 +1504,70 @@ export default function VoiceTemplatePage() {
                     <Md>{variationResults[activeVariation] || '(generating...)'}</Md>
                   </div>
                   <p className="text-xs mt-2 opacity-50">
-                    Compare the 3 variations. Which sounds most like you? Reference specific parts in your feedback.
+                    Select a variation, then give feedback to refine that specific article.
                   </p>
                 </div>
 
                 <div className="md:w-[40%]">
-                  <label className="block text-xs font-bold uppercase mb-2">Your Feedback</label>
+                  <label className="block text-xs font-bold uppercase mb-2">
+                    Refine This Article
+                    {articleConversation.length > 0 && (
+                      <span className="ml-2 bg-purple-300 px-2 py-0.5 text-[10px]">
+                        {Math.floor(articleConversation.length / 2)} iterations
+                      </span>
+                    )}
+                  </label>
                   <textarea
                     value={refinementFeedback}
                     onChange={e => setRefinementFeedback(e.target.value)}
-                    placeholder={"e.g. Variation 2 is closest, but the opening of 1 is better. All three are too formal in the middle..."}
+                    placeholder={"Give feedback on this article:\ne.g. The opening is too generic, I would start with a personal anecdote. The closing question feels forced..."}
                     rows={6}
                     className="w-full border-2 border-black p-3 font-mono text-sm resize-y mb-3"
+                    onKeyDown={e => {
+                      if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+                        e.preventDefault();
+                        refineArticle();
+                      }
+                    }}
                   />
                   <button
-                    onClick={refineTemplate}
+                    onClick={refineArticle}
                     disabled={refining || !refinementFeedback.trim()}
                     className={`w-full border-4 border-black p-3 font-black uppercase transition-all ${
                       refining ? 'bg-gray-300 animate-pulse' : 'bg-yellow-300 hover:bg-yellow-400 shadow-brutal-sm disabled:opacity-30'
                     }`}
                   >
-                    {refining ? 'Refining Template...' : 'Refine Template'}
+                    {refining ? 'Rewriting...' : 'Rewrite Article'}
                   </button>
+
+                  <p className="text-xs mt-2 opacity-50">
+                    Cmd+Enter to submit · Feedback refines the article, not the template
+                  </p>
+
+                  {/* Template update offer — only after multiple rounds */}
+                  {showTemplateUpdateOffer && (
+                    <div className="mt-4 border-2 border-green-600 bg-green-50 p-3">
+                      <p className="text-sm font-bold mb-2">Update your voice template?</p>
+                      <p className="text-xs mb-3 opacity-70">
+                        Based on your {Math.floor(articleConversation.length / 2)} rounds of feedback, we can update your voice template to capture what you&apos;ve refined.
+                      </p>
+                      <div className="flex gap-2">
+                        <button
+                          onClick={updateTemplateFromSession}
+                          disabled={refining}
+                          className="border-2 border-green-600 bg-green-300 px-4 py-2 text-sm font-bold hover:bg-green-400 transition-colors"
+                        >
+                          Yes, Update Template
+                        </button>
+                        <button
+                          onClick={() => setShowTemplateUpdateOffer(false)}
+                          className="border-2 border-black px-4 py-2 text-sm font-bold hover:bg-black hover:text-white transition-colors"
+                        >
+                          No, Keep Current
+                        </button>
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
             )}
@@ -1415,23 +1595,65 @@ export default function VoiceTemplatePage() {
                 </div>
 
                 <div className="md:w-[40%]">
-                  <label className="block text-xs font-bold uppercase mb-2">Your Feedback</label>
+                  <label className="block text-xs font-bold uppercase mb-2">
+                    Refine This Article
+                    {articleConversation.length > 0 && (
+                      <span className="ml-2 bg-purple-300 px-2 py-0.5 text-[10px]">
+                        {Math.floor(articleConversation.length / 2)} iterations
+                      </span>
+                    )}
+                  </label>
                   <textarea
                     value={refinementFeedback}
                     onChange={e => setRefinementFeedback(e.target.value)}
-                    placeholder="What needs to change? Be specific about tone, structure, word choices..."
+                    placeholder={"Give feedback on this article:\ne.g. Too formal, needs more direct address. The structure is good but vocabulary feels corporate..."}
                     rows={6}
                     className="w-full border-2 border-black p-3 font-mono text-sm resize-y mb-3"
+                    onKeyDown={e => {
+                      if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+                        e.preventDefault();
+                        refineArticle();
+                      }
+                    }}
                   />
                   <button
-                    onClick={refineTemplate}
+                    onClick={refineArticle}
                     disabled={refining || !refinementFeedback.trim()}
                     className={`w-full border-4 border-black p-3 font-black uppercase transition-all ${
                       refining ? 'bg-gray-300 animate-pulse' : 'bg-yellow-300 hover:bg-yellow-400 shadow-brutal-sm disabled:opacity-30'
                     }`}
                   >
-                    {refining ? 'Refining Template...' : 'Refine Template'}
+                    {refining ? 'Rewriting...' : 'Rewrite Article'}
                   </button>
+
+                  <p className="text-xs mt-2 opacity-50">
+                    Cmd+Enter to submit · Feedback refines the article, not the template
+                  </p>
+
+                  {/* Template update offer — only after multiple rounds */}
+                  {showTemplateUpdateOffer && (
+                    <div className="mt-4 border-2 border-green-600 bg-green-50 p-3">
+                      <p className="text-sm font-bold mb-2">Update your voice template?</p>
+                      <p className="text-xs mb-3 opacity-70">
+                        Based on your {Math.floor(articleConversation.length / 2)} rounds of feedback, we can update your voice template to capture what you&apos;ve refined.
+                      </p>
+                      <div className="flex gap-2">
+                        <button
+                          onClick={updateTemplateFromSession}
+                          disabled={refining}
+                          className="border-2 border-green-600 bg-green-300 px-4 py-2 text-sm font-bold hover:bg-green-400 transition-colors"
+                        >
+                          Yes, Update Template
+                        </button>
+                        <button
+                          onClick={() => setShowTemplateUpdateOffer(false)}
+                          className="border-2 border-black px-4 py-2 text-sm font-bold hover:bg-black hover:text-white transition-colors"
+                        >
+                          No, Keep Current
+                        </button>
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
             )}
