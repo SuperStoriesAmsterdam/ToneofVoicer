@@ -291,11 +291,19 @@ export default function VoiceTemplatePage() {
   // Refinement loop
   const [refinementMode, setRefinementMode] = useState(false);
   const [refinementTopic, setRefinementTopic] = useState('');
+  const [refinementMedium, setRefinementMedium] = useState('linkedin');
+  const [refinementLoopMode, setRefinementLoopMode] = useState<'variations' | 'multi'>('variations');
+  // Variations mode: 3 versions of same piece
+  const [variationResults, setVariationResults] = useState<string[]>([]);
+  const [activeVariation, setActiveVariation] = useState(0);
+  // Multi-medium mode: 1 version per medium
   const [refinementTypes, setRefinementTypes] = useState<string[]>(['linkedin']);
   const [refinementResults, setRefinementResults] = useState<Record<string, string>>({});
   const [activeRefinementTab, setActiveRefinementTab] = useState('linkedin');
+  // Shared
   const [refinementFeedback, setRefinementFeedback] = useState('');
   const [refining, setRefining] = useState(false);
+  const [refinementRound, setRefinementRound] = useState(0);
 
   // Follow-up conversation
   const [followUpText, setFollowUpText] = useState('');
@@ -569,57 +577,101 @@ export default function VoiceTemplatePage() {
 
   const generateRefinementContent = useCallback(async () => {
     if (!finalTemplate || !refinementTopic.trim()) return alert('Please enter a topic first.');
-    if (refinementTypes.length === 0) return alert('Please select at least one content type.');
     setRefining(true);
-    setRefinementResults({});
-    const results: Record<string, string> = {};
 
-    const typesToGenerate = CONTENT_TYPES.filter(t => refinementTypes.includes(t.id));
-    setActiveRefinementTab(typesToGenerate[0]?.id || 'linkedin');
+    if (refinementLoopMode === 'variations') {
+      // Generate 3 variations of the same piece
+      setVariationResults([]);
+      setActiveVariation(0);
+      const medium = CONTENT_TYPES.find(t => t.id === refinementMedium);
+      const promptBase = medium?.prompt || 'Write a LinkedIn post about';
+      const results: string[] = [];
 
-    for (const type of typesToGenerate) {
-      setActiveRefinementTab(type.id);
-      try {
-        const result = await streamChat(
-          [{ role: 'user', content: `${type.prompt} ${refinementTopic.trim()}` }],
-          finalTemplate, true,
-          (text) => setRefinementResults(prev => ({ ...prev, [type.id]: text })),
-        );
-        results[type.id] = result;
-        setRefinementResults(prev => ({ ...prev, [type.id]: result }));
-      } catch {
-        results[type.id] = '(generation failed)';
-        setRefinementResults(prev => ({ ...prev, [type.id]: '(generation failed)' }));
+      for (let i = 0; i < 3; i++) {
+        const variationPrompt = i === 0
+          ? `${promptBase} ${refinementTopic.trim()}`
+          : `${promptBase} ${refinementTopic.trim()}\n\nIMPORTANT: This is variation ${i + 1} of 3. Write a COMPLETELY DIFFERENT version — different opening, different angle, different structure. Do NOT repeat the approach from previous versions. Explore a fresh perspective on this topic.`;
+
+        try {
+          const idx = i;
+          const result = await streamChat(
+            [{ role: 'user', content: variationPrompt }],
+            finalTemplate, true,
+            (text) => setVariationResults(prev => {
+              const next = [...prev];
+              next[idx] = text;
+              return next;
+            }),
+          );
+          results.push(result);
+          setVariationResults([...results]);
+        } catch {
+          results.push('(generation failed)');
+          setVariationResults([...results]);
+        }
+      }
+    } else {
+      // Multi-medium mode: 1 version per selected medium
+      if (refinementTypes.length === 0) { setRefining(false); return alert('Select at least one content type.'); }
+      setRefinementResults({});
+      const results: Record<string, string> = {};
+      const typesToGenerate = CONTENT_TYPES.filter(t => refinementTypes.includes(t.id));
+      setActiveRefinementTab(typesToGenerate[0]?.id || 'linkedin');
+
+      for (const type of typesToGenerate) {
+        setActiveRefinementTab(type.id);
+        try {
+          const result = await streamChat(
+            [{ role: 'user', content: `${type.prompt} ${refinementTopic.trim()}` }],
+            finalTemplate, true,
+            (text) => setRefinementResults(prev => ({ ...prev, [type.id]: text })),
+          );
+          results[type.id] = result;
+          setRefinementResults(prev => ({ ...prev, [type.id]: result }));
+        } catch {
+          results[type.id] = '(generation failed)';
+          setRefinementResults(prev => ({ ...prev, [type.id]: '(generation failed)' }));
+        }
       }
     }
+
+    setRefinementRound(prev => prev + 1);
     setRefining(false);
-  }, [finalTemplate, refinementTopic, refinementTypes, streamChat]);
+  }, [finalTemplate, refinementTopic, refinementLoopMode, refinementMedium, refinementTypes, streamChat]);
 
   const refineTemplate = useCallback(async () => {
     if (!refinementFeedback.trim() || !finalTemplate) return;
     setRefining(true);
     try {
-      const contentContext = Object.entries(refinementResults)
-        .map(([id, text]) => {
-          const label = CONTENT_TYPES.find(t => t.id === id)?.label || id;
-          return `## ${label}\n${text}`;
-        })
-        .join('\n\n---\n\n');
+      let contentContext: string;
+      if (refinementLoopMode === 'variations') {
+        const medium = CONTENT_TYPES.find(t => t.id === refinementMedium)?.label || refinementMedium;
+        contentContext = variationResults
+          .map((text, i) => `## Variation ${i + 1} (${medium})\n${text}`)
+          .join('\n\n---\n\n');
+      } else {
+        contentContext = Object.entries(refinementResults)
+          .map(([id, text]) => {
+            const label = CONTENT_TYPES.find(t => t.id === id)?.label || id;
+            return `## ${label}\n${text}`;
+          })
+          .join('\n\n---\n\n');
+      }
+
       const result = await streamChat(
         [{
           role: 'user',
-          content: `Here is content generated with the current voice template:\n\n${contentContext}\n\nFeedback: ${refinementFeedback}\n\nPlease refine the voice template to address this feedback. Output the complete updated template.`,
+          content: `Here is content generated with the current voice template:\n\n${contentContext}\n\nFeedback from the author: ${refinementFeedback}\n\nPlease refine the voice template to address this feedback. Remember: express style rules as tendencies with frequency weights, not absolute rules. Maintain controlled inconsistency for natural voice. Output the complete updated template.\n\nHere is the current template for reference:\n${finalTemplate}`,
         }],
         undefined, true,
       );
       setFinalTemplate(result);
       setRefinementFeedback('');
-      setRefinementResults({});
     } catch (err) {
       alert(err instanceof Error ? err.message : 'Refinement failed');
     }
     setRefining(false);
-  }, [refinementFeedback, finalTemplate, refinementResults, streamChat]);
+  }, [refinementFeedback, finalTemplate, refinementLoopMode, refinementMedium, variationResults, refinementResults, streamChat]);
 
   // ── Template library ───────────────────────────────────────────────────
 
@@ -715,7 +767,9 @@ export default function VoiceTemplatePage() {
     setContentResults({});
     setRefinementMode(false);
     setRefinementResults({});
+    setVariationResults([]);
     setRefinementTopic('');
+    setRefinementRound(0);
   };
 
   // ── Copy helper ────────────────────────────────────────────────────────
@@ -1186,37 +1240,79 @@ export default function VoiceTemplatePage() {
         {finalTemplate && !refinementMode && (
           <div className="text-center mb-8">
             <button
-              onClick={() => { setRefinementMode(true); setRefinementResults({}); }}
+              onClick={() => { setRefinementMode(true); setVariationResults([]); setRefinementResults({}); setRefinementRound(0); }}
               className="border-4 border-black px-8 py-4 font-black uppercase bg-purple-300 hover:bg-purple-400 shadow-brutal-sm hover:shadow-brutal transition-all"
             >
               Start Refinement Loop
             </button>
-            <p className="text-xs mt-2 opacity-60">Pick a topic &amp; medium, generate content, review, and iteratively refine your template</p>
+            <p className="text-xs mt-2 opacity-60">Pick a topic &amp; medium, generate variations, compare, and iteratively refine your template</p>
           </div>
         )}
 
         {refinementMode && (
           <div className="border-4 border-black bg-purple-50 shadow-brutal-lg mb-8">
             <div className="border-b-4 border-black p-4 bg-purple-200 flex justify-between items-center">
-              <h2 className="font-black text-xl">Refinement Loop</h2>
+              <div>
+                <h2 className="font-black text-xl">Refinement Loop</h2>
+                {refinementRound > 0 && (
+                  <span className="text-xs font-bold bg-black text-white px-2 py-0.5 mt-1 inline-block">Round {refinementRound}</span>
+                )}
+              </div>
               <button onClick={() => setRefinementMode(false)} className="border-2 border-black px-4 py-1 text-sm font-bold hover:bg-black hover:text-white transition-colors">
                 Done Refining
               </button>
             </div>
 
-            {/* Brief: topic + medium + generate */}
+            {/* Mode toggle + brief */}
             <div className="p-4 border-b-4 border-black bg-purple-100">
-              <div className="flex flex-col md:flex-row gap-4">
-                <div className="flex-1">
-                  <label className="block text-xs font-bold uppercase mb-1">Topic</label>
-                  <input
-                    value={refinementTopic}
-                    onChange={e => setRefinementTopic(e.target.value)}
-                    placeholder="e.g. AI in recruitment, lessons from scaling a startup..."
-                    className="w-full border-2 border-black p-2 font-mono text-sm"
-                  />
+              <div className="flex gap-0 mb-4">
+                <button
+                  onClick={() => setRefinementLoopMode('variations')}
+                  className={`flex-1 border-2 border-black p-2 text-sm font-bold transition-colors ${
+                    refinementLoopMode === 'variations' ? 'bg-black text-white' : 'bg-white hover:bg-gray-100'
+                  }`}
+                >
+                  3 Variations (same medium)
+                </button>
+                <button
+                  onClick={() => setRefinementLoopMode('multi')}
+                  className={`flex-1 border-2 border-black border-l-0 p-2 text-sm font-bold transition-colors ${
+                    refinementLoopMode === 'multi' ? 'bg-black text-white' : 'bg-white hover:bg-gray-100'
+                  }`}
+                >
+                  Multi-medium (1 per type)
+                </button>
+              </div>
+
+              <div className="mb-3">
+                <label className="block text-xs font-bold uppercase mb-1">Topic</label>
+                <input
+                  value={refinementTopic}
+                  onChange={e => setRefinementTopic(e.target.value)}
+                  placeholder="e.g. AI in recruitment, lessons from scaling a startup..."
+                  className="w-full border-2 border-black p-2 font-mono text-sm"
+                />
+              </div>
+
+              {refinementLoopMode === 'variations' ? (
+                <div className="mb-3">
+                  <label className="block text-xs font-bold uppercase mb-1">Medium</label>
+                  <div className="flex flex-wrap gap-2">
+                    {CONTENT_TYPES.map(type => (
+                      <button
+                        key={type.id}
+                        onClick={() => setRefinementMedium(type.id)}
+                        className={`border-2 border-black px-4 py-2 text-sm font-bold transition-colors ${
+                          refinementMedium === type.id ? 'bg-black text-white' : 'bg-white hover:bg-gray-100'
+                        }`}
+                      >
+                        {type.label}
+                      </button>
+                    ))}
+                  </div>
                 </div>
-                <div>
+              ) : (
+                <div className="mb-3">
                   <label className="block text-xs font-bold uppercase mb-1">Content Types</label>
                   <div className="flex flex-wrap gap-2">
                     {CONTENT_TYPES.map(type => (
@@ -1236,22 +1332,69 @@ export default function VoiceTemplatePage() {
                     ))}
                   </div>
                 </div>
-              </div>
+              )}
+
               <button
                 onClick={generateRefinementContent}
-                disabled={refining || !refinementTopic.trim() || refinementTypes.length === 0}
-                className={`w-full mt-3 border-4 border-black p-3 font-black uppercase transition-all ${
+                disabled={refining || !refinementTopic.trim()}
+                className={`w-full mt-1 border-4 border-black p-3 font-black uppercase transition-all ${
                   refining ? 'bg-gray-300 animate-pulse' : 'bg-green-400 hover:bg-green-500 shadow-brutal-sm disabled:opacity-30'
                 }`}
               >
-                {refining ? 'Generating...' : Object.keys(refinementResults).length > 0 ? 'Regenerate Content' : 'Generate Content'}
+                {refining ? 'Generating...' : refinementRound > 0 ? 'Regenerate with Updated Template' : 'Generate Content'}
               </button>
             </div>
 
-            {/* Results + feedback split pane */}
-            {Object.keys(refinementResults).length > 0 && (
+            {/* Variations mode results */}
+            {refinementLoopMode === 'variations' && variationResults.length > 0 && (
               <div className="flex flex-col md:flex-row gap-4 p-4">
-                {/* Left: tabbed results */}
+                <div className="md:w-[60%]">
+                  <div className="flex border-b-2 border-black mb-3">
+                    {variationResults.map((_, i) => (
+                      <button
+                        key={i}
+                        onClick={() => setActiveVariation(i)}
+                        className={`px-4 py-2 text-xs font-bold uppercase border-2 border-black border-b-0 -mb-[2px] transition-colors ${
+                          activeVariation === i ? 'bg-black text-white' : 'bg-white hover:bg-gray-100'
+                        }`}
+                      >
+                        Variation {i + 1}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="border-2 border-black p-4 bg-white max-h-[28rem] overflow-y-auto">
+                    <Md>{variationResults[activeVariation] || '(generating...)'}</Md>
+                  </div>
+                  <p className="text-xs mt-2 opacity-50">
+                    Compare the 3 variations. Which sounds most like you? Reference specific parts in your feedback.
+                  </p>
+                </div>
+
+                <div className="md:w-[40%]">
+                  <label className="block text-xs font-bold uppercase mb-2">Your Feedback</label>
+                  <textarea
+                    value={refinementFeedback}
+                    onChange={e => setRefinementFeedback(e.target.value)}
+                    placeholder={"e.g. Variation 2 is closest, but the opening of 1 is better. All three are too formal in the middle..."}
+                    rows={6}
+                    className="w-full border-2 border-black p-3 font-mono text-sm resize-y mb-3"
+                  />
+                  <button
+                    onClick={refineTemplate}
+                    disabled={refining || !refinementFeedback.trim()}
+                    className={`w-full border-4 border-black p-3 font-black uppercase transition-all ${
+                      refining ? 'bg-gray-300 animate-pulse' : 'bg-yellow-300 hover:bg-yellow-400 shadow-brutal-sm disabled:opacity-30'
+                    }`}
+                  >
+                    {refining ? 'Refining Template...' : 'Refine Template'}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Multi-medium mode results */}
+            {refinementLoopMode === 'multi' && Object.keys(refinementResults).length > 0 && (
+              <div className="flex flex-col md:flex-row gap-4 p-4">
                 <div className="md:w-[60%]">
                   <div className="flex border-b-2 border-black mb-3">
                     {CONTENT_TYPES.filter(t => refinementTypes.includes(t.id)).map(type => (
@@ -1271,7 +1414,6 @@ export default function VoiceTemplatePage() {
                   </div>
                 </div>
 
-                {/* Right: feedback */}
                 <div className="md:w-[40%]">
                   <label className="block text-xs font-bold uppercase mb-2">Your Feedback</label>
                   <textarea
@@ -1288,7 +1430,7 @@ export default function VoiceTemplatePage() {
                       refining ? 'bg-gray-300 animate-pulse' : 'bg-yellow-300 hover:bg-yellow-400 shadow-brutal-sm disabled:opacity-30'
                     }`}
                   >
-                    {refining ? 'Refining...' : 'Refine Template'}
+                    {refining ? 'Refining Template...' : 'Refine Template'}
                   </button>
                 </div>
               </div>
