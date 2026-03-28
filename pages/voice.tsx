@@ -756,7 +756,7 @@ export default function VoiceTemplatePage() {
   // ── Reset ──────────────────────────────────────────────────────────────
 
   const resetAll = () => {
-    if (!confirm('Start over? This will clear all progress (saved templates are kept).')) return;
+    if (!confirm('Start a new project? This will clear all progress (saved templates in your library are kept).')) return;
     localStorage.removeItem(STORAGE_KEY);
     setCurrentStep(0);
     setStepStates(STEPS.map(() => ({ messages: [], streaming: false })));
@@ -840,7 +840,7 @@ export default function VoiceTemplatePage() {
               onClick={resetAll}
               className="border-2 border-red-600 text-red-600 px-4 py-2 text-sm font-bold hover:bg-red-600 hover:text-white transition-colors"
             >
-              Start Over
+              New Project
             </button>
           </div>
         </div>
@@ -1193,8 +1193,8 @@ export default function VoiceTemplatePage() {
           </button>
         </div>
 
-        {/* Final template */}
-        {finalTemplate && (
+        {/* Final template — only show after Phase 3 (step 5+) */}
+        {finalTemplate && currentStep >= 5 && (
           <div className="border-4 border-black bg-green-100 shadow-brutal-lg mb-8">
             <div className="border-b-4 border-black p-4 bg-green-300">
               <div className="flex justify-between items-center flex-wrap gap-2">
@@ -1237,7 +1237,7 @@ export default function VoiceTemplatePage() {
         )}
 
         {/* Refinement Loop */}
-        {finalTemplate && !refinementMode && (
+        {finalTemplate && currentStep >= 5 && !refinementMode && (
           <div className="text-center mb-8">
             <button
               onClick={() => { setRefinementMode(true); setVariationResults([]); setRefinementResults({}); setRefinementRound(0); }}
